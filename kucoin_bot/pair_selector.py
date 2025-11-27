@@ -1,7 +1,7 @@
 """Pair selection module based on volume, spread, volatility, funding, and fees."""
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -31,6 +31,21 @@ class PairScore:
     volatility: float
     funding_rate: float
     fee_rate: float
+    
+    # Market selection metadata
+    recommended_market: Market | None = None
+    market_scores: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class MarketRecommendation:
+    """Recommendation for which market to trade a symbol."""
+
+    symbol: str
+    recommended_market: Market
+    confidence: float
+    reasons: list[str]
+    alternative_markets: list[tuple[Market, float]]  # (market, score)
 
 
 class PairSelector:
@@ -240,4 +255,227 @@ class PairSelector:
                 f"edge={pair.expected_edge:.3f}%"
             )
 
+        return selected
+
+    async def recommend_market(
+        self,
+        base_symbol: str,
+        portfolio_value: float,
+        volatility: float = 0.05,
+        risk_tolerance: str = "medium",
+    ) -> MarketRecommendation:
+        """Recommend the best market (spot/margin/futures) for a symbol.
+        
+        Considers:
+        - Liquidity across markets
+        - Funding rates (futures)
+        - Borrowing costs (margin)
+        - Leverage requirements
+        - Risk tolerance
+        """
+        reasons = []
+        market_scores: dict[Market, float] = {}
+        
+        # Score each market
+        for market in [Market.SPOT, Market.MARGIN, Market.FUTURES]:
+            try:
+                score = await self._score_market_for_symbol(
+                    base_symbol, market, portfolio_value, volatility, risk_tolerance
+                )
+                market_scores[market] = score
+            except Exception as e:
+                logger.debug(f"Could not score {market.value} for {base_symbol}: {e}")
+                market_scores[market] = 0.0
+        
+        # Determine best market
+        if not market_scores or max(market_scores.values()) == 0:
+            return MarketRecommendation(
+                symbol=base_symbol,
+                recommended_market=Market.SPOT,
+                confidence=0.0,
+                reasons=["No market data available, defaulting to spot"],
+                alternative_markets=[],
+            )
+        
+        best_market = max(market_scores, key=market_scores.get)
+        best_score = market_scores[best_market]
+        
+        # Calculate confidence
+        total_score = sum(market_scores.values())
+        confidence = best_score / total_score if total_score > 0 else 0
+        
+        # Generate reasons
+        if best_market == Market.SPOT:
+            reasons.append("Lowest risk, no leverage required")
+            if volatility > 0.08:
+                reasons.append("High volatility favors lower leverage")
+        elif best_market == Market.MARGIN:
+            reasons.append("Good for moderate leverage with flexibility")
+            if risk_tolerance == "medium":
+                reasons.append("Matches medium risk tolerance")
+        elif best_market == Market.FUTURES:
+            reasons.append("Best for directional trades with leverage")
+            if volatility < 0.03:
+                reasons.append("Low volatility can be leveraged safely")
+        
+        # Get alternatives
+        sorted_markets = sorted(
+            market_scores.items(), key=lambda x: x[1], reverse=True
+        )
+        alternatives = [
+            (m, s) for m, s in sorted_markets[1:] if s > 0
+        ]
+        
+        return MarketRecommendation(
+            symbol=base_symbol,
+            recommended_market=best_market,
+            confidence=confidence,
+            reasons=reasons,
+            alternative_markets=alternatives,
+        )
+
+    async def _score_market_for_symbol(
+        self,
+        symbol: str,
+        market: Market,
+        portfolio_value: float,
+        volatility: float,
+        risk_tolerance: str,
+    ) -> float:
+        """Score a specific market for a symbol."""
+        score = 50.0  # Base score
+        
+        try:
+            # Get ticker data
+            ticker = await self.client.get_ticker(symbol, market)
+            
+            # Liquidity score
+            if ticker.volume_24h >= self.min_volume * 2:
+                score += 20
+            elif ticker.volume_24h >= self.min_volume:
+                score += 10
+            else:
+                score -= 20
+            
+            # Spread score
+            if ticker.bid > 0 and ticker.ask > 0:
+                spread_pct = (ticker.ask - ticker.bid) / ((ticker.ask + ticker.bid) / 2) * 100
+                if spread_pct < 0.1:
+                    score += 15
+                elif spread_pct < 0.3:
+                    score += 10
+                elif spread_pct > 0.5:
+                    score -= 10
+        except Exception:
+            score -= 30  # Market likely not available
+        
+        # Market-specific adjustments
+        if market == Market.SPOT:
+            # Spot is safer
+            if risk_tolerance == "low":
+                score += 20
+            elif volatility > 0.08:
+                score += 15  # Prefer spot in high vol
+        
+        elif market == Market.MARGIN:
+            # Margin has borrowing costs
+            if risk_tolerance in ["medium", "high"]:
+                score += 10
+            else:
+                score -= 10
+            
+            # Volatility adjustment
+            if 0.03 <= volatility <= 0.08:
+                score += 10  # Good for moderate leverage
+        
+        elif market == Market.FUTURES:
+            # Check funding rate
+            try:
+                funding_rate = await self.client.get_funding_rate(symbol)
+                if abs(funding_rate) < 0.0001:
+                    score += 15  # Low funding is good
+                elif abs(funding_rate) < 0.0005:
+                    score += 5
+                elif abs(funding_rate) > 0.001:
+                    score -= 20  # High funding is costly
+            except Exception:
+                score -= 10  # Can't get funding rate
+            
+            # Risk tolerance adjustment
+            if risk_tolerance == "high":
+                score += 20
+            elif risk_tolerance == "low":
+                score -= 30
+            
+            # Volatility adjustment
+            if volatility < 0.03:
+                score += 15  # Low vol can be leveraged
+            elif volatility > 0.08:
+                score -= 15  # High vol is risky with leverage
+        
+        return max(0, score)
+
+    async def select_pairs_with_market_auto(
+        self,
+        top_n: int = 10,
+        min_score: float = 0.5,
+        portfolio_value: float = 10000.0,
+        risk_tolerance: str = "medium",
+    ) -> list[PairScore]:
+        """Select pairs with automatic market selection.
+        
+        For each pair, determines the best market to trade it on.
+        """
+        all_pairs: list[PairScore] = []
+        
+        # Get spot pairs as base universe
+        try:
+            spot_pairs = await self.select_pairs(
+                market=Market.SPOT, top_n=top_n * 2, min_score=min_score * 0.8
+            )
+        except Exception as e:
+            logger.error(f"Failed to get spot pairs: {e}")
+            spot_pairs = []
+        
+        # For each pair, find best market
+        for pair in spot_pairs:
+            base_symbol = pair.symbol.replace("-USDT", "").replace("USDT", "")
+            
+            # Get market recommendation
+            recommendation = await self.recommend_market(
+                pair.symbol,
+                portfolio_value,
+                pair.volatility,
+                risk_tolerance,
+            )
+            
+            # Update pair with recommended market
+            pair.recommended_market = recommendation.recommended_market
+            pair.market_scores = {
+                m.value: s for m, s in recommendation.alternative_markets
+            }
+            pair.market_scores[recommendation.recommended_market.value] = (
+                recommendation.confidence
+            )
+            
+            # Adjust score based on market suitability
+            pair.total_score *= (0.5 + recommendation.confidence * 0.5)
+            
+            all_pairs.append(pair)
+        
+        # Re-sort by adjusted score
+        all_pairs.sort(key=lambda x: x.total_score, reverse=True)
+        
+        selected = all_pairs[:top_n]
+        
+        logger.info(
+            f"Auto-selected {len(selected)} pairs with market recommendations"
+        )
+        
+        for pair in selected:
+            logger.info(
+                f"  {pair.symbol}: {pair.recommended_market.value if pair.recommended_market else 'spot'} "
+                f"(score={pair.total_score:.3f})"
+            )
+        
         return selected

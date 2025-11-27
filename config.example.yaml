@@ -24,19 +24,45 @@ pair_selection:
   max_volatility: 0.15
   max_funding_rate: 0.001  # for futures
   max_fee_pct: 0.1
+  auto_market_selection: true  # Enable automatic spot/margin/futures selection
+
+# Regime detection settings
+regime:
+  trend_threshold: 0.3
+  volatility_lookback: 20
+  trend_lookback: 50
+  hurst_lookback: 100
+  volatility_high_pct: 80
+  volatility_low_pct: 20
+
+# ML settings (forecasting and position sizing)
+ml:
+  lookback: 100
+  forecast_horizon: 5
+  min_cv_score: 0.51  # Minimum CV score for reliable forecasts
+  n_cv_folds: 5
+  min_training_samples: 200
+  target_volatility: 0.10
+  kelly_fraction: 0.25  # Fractional Kelly for position sizing
 
 # Risk management
 risk:
-  max_position_pct: 5.0  # max % of portfolio per position
-  max_drawdown_pct: 10.0  # max portfolio drawdown
+  max_position_pct: 5.0  # max % of portfolio per position (auto-adjusted)
+  max_drawdown_pct: 10.0  # max portfolio drawdown (auto-adjusted)
   atr_multiplier: 2.0  # for stop loss
   var_confidence: 0.95  # Value at Risk confidence level
   margin_buffer: 0.2  # 20% margin buffer
-  max_leverage: 5  # max leverage for futures/margin
+  max_leverage: 5  # max leverage for futures/margin (auto-adjusted)
   daily_loss_limit_pct: 3.0
 
 # Strategy settings
 strategies:
+  use_ensemble: true  # Enable ensemble strategy with regime-based allocation
+  
+  ensemble:
+    min_agreement: 0.5  # Minimum strategy agreement for signal
+    strength_threshold: 0.3
+  
   enabled:
     - trend
     - mean_reversion
@@ -77,6 +103,7 @@ logging:
   file: "logs/bot.log"
   max_size_mb: 10
   backup_count: 5
+  audit_dir: "logs/audit"  # Audit log directory
 
 # Retry settings
 retry:
