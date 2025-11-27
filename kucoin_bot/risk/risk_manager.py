@@ -105,7 +105,7 @@ class RiskManager:
         self, value: float, daily_pnl: float = 0.0
     ) -> None:
         """Update portfolio state."""
-        if self.initial_value == 0.0:
+        if self.initial_value <= 0:
             self.initial_value = value
         self.portfolio_value = value
         self.peak_value = max(self.peak_value, value)

@@ -39,7 +39,10 @@ class MomentumStrategy(BaseStrategy):
         volume_momentum: float,
         acceleration: float,
     ) -> float:
-        """Calculate composite momentum score (0-1)."""
+        """Calculate composite momentum score (-1 to 1).
+        
+        Positive values indicate bullish momentum, negative values indicate bearish.
+        """
         # ROC score (capped at +/- 10%)
         roc_score = min(1.0, max(-1.0, roc * 10))
         

@@ -334,7 +334,9 @@ class TestPortfolioRiskManagement:
         rm = RiskManager({"max_drawdown_pct": 20.0})  # Set higher threshold
         rm.update_portfolio(10000)
         rm.initial_value = 10000
-        rm.peak_value = 12000  # 16.7% drawdown from peak (above 15% safe mode threshold)
+        # With current value 10000 and peak_value 12000:
+        # drawdown = (12000-10000)/12000 = 16.7% (above 15% safe mode threshold)
+        rm.peak_value = 12000
         
         rm.check_portfolio_limits()
         assert rm.safe_mode_enabled is True

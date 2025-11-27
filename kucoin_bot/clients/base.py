@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import random
 import time
 from dataclasses import dataclass, field
 from functools import wraps
@@ -159,7 +160,6 @@ def with_retry(retry_config: RetryConfig | None = None, metrics: APIMetrics | No
                     
                     # Add jitter if enabled
                     if config.jitter:
-                        import random
                         delay = delay * (0.5 + random.random())
                     
                     retried = True

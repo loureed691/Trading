@@ -192,6 +192,7 @@ class PairSelector:
             
             if filled_size > 0:
                 avg_price = weighted_price / filled_size
+                # Return slippage as a percentage (e.g., 0.5 means 0.5%)
                 slippage_pct = ((avg_price - best_ask) / best_ask) * 100
             else:
                 slippage_pct = float("inf")
@@ -203,8 +204,13 @@ class PairSelector:
             return float("inf"), 0.0
 
     def _score_slippage(self, slippage_pct: float, liquidity_depth: float) -> float:
-        """Score slippage (lower is better) and liquidity depth (higher is better)."""
-        # Slippage score
+        """Score slippage (lower is better) and liquidity depth (higher is better).
+        
+        Args:
+            slippage_pct: Slippage as percentage (e.g., 0.5 means 0.5%)
+            liquidity_depth: Total orderbook depth in USD
+        """
+        # Slippage score - max_slippage is also a percentage (e.g., 0.5 means 0.5%)
         if slippage_pct > self.max_slippage:
             slippage_score = 0.0
         else:
