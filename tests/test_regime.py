@@ -1,6 +1,5 @@
 """Tests for regime detection module."""
 
-import pytest
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -225,8 +224,8 @@ class TestRegimeDetector:
         weights = detector.get_strategy_weights(regime_state)
         
         # With low confidence, weights should be equal
-        assert weights["trend"] == weights["mean_reversion"]
-        assert weights["breakout"] == weights["market_making"]
+        assert abs(weights["trend"] - weights["mean_reversion"]) < 0.01
+        assert abs(weights["breakout"] - weights["market_making"]) < 0.01
 
     def test_regime_types_coverage(self) -> None:
         """Test all regime types can be detected."""

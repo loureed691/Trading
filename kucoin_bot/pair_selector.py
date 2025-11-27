@@ -441,8 +441,6 @@ class PairSelector:
         
         # For each pair, find best market
         for pair in spot_pairs:
-            base_symbol = pair.symbol.replace("-USDT", "").replace("USDT", "")
-            
             # Get market recommendation
             recommendation = await self.recommend_market(
                 pair.symbol,

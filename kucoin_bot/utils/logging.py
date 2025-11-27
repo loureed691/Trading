@@ -8,6 +8,8 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 
 def setup_logging(config: dict[str, Any]) -> None:
     """Configure logging based on configuration."""
@@ -321,17 +323,17 @@ class MonitoringMetrics:
     def record_order_placed(self) -> None:
         """Record order placement."""
         self._metrics["orders_placed"] += 1
-        self._metrics["last_update"] = datetime.utcnow().isoformat()
+        self._metrics["last_update"] = datetime.now(timezone.utc).isoformat()
 
     def record_order_filled(self) -> None:
         """Record order fill."""
         self._metrics["orders_filled"] += 1
-        self._metrics["last_update"] = datetime.utcnow().isoformat()
+        self._metrics["last_update"] = datetime.now(timezone.utc).isoformat()
 
     def record_order_cancelled(self) -> None:
         """Record order cancellation."""
         self._metrics["orders_cancelled"] += 1
-        self._metrics["last_update"] = datetime.utcnow().isoformat()
+        self._metrics["last_update"] = datetime.now(timezone.utc).isoformat()
 
     def record_position_closed(self, pnl: float) -> None:
         """Record position closure."""
@@ -343,12 +345,12 @@ class MonitoringMetrics:
         else:
             self._metrics["loss_count"] += 1
         
-        self._metrics["last_update"] = datetime.utcnow().isoformat()
+        self._metrics["last_update"] = datetime.now(timezone.utc).isoformat()
 
     def update_position_count(self, count: int) -> None:
         """Update current position count."""
         self._metrics["current_positions"] = count
-        self._metrics["last_update"] = datetime.utcnow().isoformat()
+        self._metrics["last_update"] = datetime.now(timezone.utc).isoformat()
 
     def get_metrics(self) -> dict[str, Any]:
         """Get current metrics snapshot."""
@@ -377,8 +379,6 @@ class MonitoringMetrics:
                 "min_pnl": 0.0,
                 "std_pnl": 0.0,
             }
-        
-        import numpy as np
         
         pnls = np.array(self._position_pnls)
         return {

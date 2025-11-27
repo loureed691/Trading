@@ -301,15 +301,18 @@ class TradingBot:
         )
         
         # Adjust signal strength based on ML forecast direction agreement
+        adjusted_strength = signal.strength
         if forecast_result.is_reliable:
-            if (forecast_result.direction == "up" and signal.type == SignalType.LONG) or \
-               (forecast_result.direction == "down" and signal.type == SignalType.SHORT):
+            if (
+                (forecast_result.direction == "up" and signal.type == SignalType.LONG) or
+                (forecast_result.direction == "down" and signal.type == SignalType.SHORT)
+            ):
                 # ML agrees with signal, increase confidence
-                signal.strength = min(1.0, signal.strength * 1.2)
+                adjusted_strength = min(1.0, signal.strength * 1.2)
                 logger.debug(f"ML forecast agrees with signal for {symbol}")
             elif forecast_result.direction != "neutral":
                 # ML disagrees, reduce confidence
-                signal.strength *= 0.7
+                adjusted_strength = signal.strength * 0.7
                 logger.debug(f"ML forecast disagrees with signal for {symbol}")
         
         # Apply dynamic risk parameters
@@ -334,7 +337,7 @@ class TradingBot:
             self.audit_logger.log_risk_event(
                 "POSITION_SIZING_REJECTED",
                 symbol,
-                {"reason": "Risk limits exceeded", "signal_strength": signal.strength},
+                {"reason": "Risk limits exceeded", "signal_strength": adjusted_strength},
             )
             return
         

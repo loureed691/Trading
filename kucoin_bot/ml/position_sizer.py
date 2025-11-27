@@ -75,7 +75,7 @@ class MLPositionSizer:
             return self.min_position_pct
         
         # Kelly formula: f = p - (1-p)/b where b = avg_win/avg_loss
-        b = abs(avg_win / avg_loss) if avg_loss != 0 else 1
+        b = abs(avg_win / avg_loss)
         kelly = win_rate - (1 - win_rate) / b
         
         # Apply fractional Kelly
@@ -157,7 +157,6 @@ class MLPositionSizer:
         
         # Split into train/test
         split_idx = len(signals) * 3 // 4
-        train_signals = signals[:split_idx]
         test_signals = signals[split_idx:]
         
         # Simulate trades with different sizing
