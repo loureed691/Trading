@@ -52,6 +52,9 @@ class RegimeDetector:
         self.volatility_low_pct = config.get("volatility_low_pct", 20)
         self.high_vol_threshold = config.get("high_vol_threshold", self.HIGH_VOLATILITY_THRESHOLD)
         self.low_vol_threshold = config.get("low_vol_threshold", self.LOW_VOLATILITY_THRESHOLD)
+        # Multiplier for data window size per lag in Hurst calculation
+        # Higher values provide more data points for R/S calculation but require more historical data
+        self.hurst_window_multiplier = config.get("hurst_window_multiplier", 10)
 
     def calculate_hurst_exponent(
         self, data: pd.Series, max_lag: int = 20
@@ -67,13 +70,11 @@ class RegimeDetector:
 
         lags = range(2, max_lag)
         rs_values = []
-        # Multiplier for data window size per lag - provides enough data points for R/S calculation
-        window_multiplier = 10
 
         for lag in lags:
             try:
                 # Calculate R/S statistic using a window proportional to the lag
-                returns = np.diff(np.log(data.iloc[-lag * window_multiplier :].values))
+                returns = np.diff(np.log(data.iloc[-lag * self.hurst_window_multiplier :].values))
                 if len(returns) < lag:
                     continue
 
@@ -207,7 +208,6 @@ class RegimeDetector:
         ).dropna()
 
         recent_vol = returns.iloc[-self.volatility_lookback :].std()
-        historical_vol = returns.std()
 
         # Percentile of recent vol vs history
         rolling_vol = returns.rolling(self.volatility_lookback).std()
@@ -244,9 +244,6 @@ class RegimeDetector:
         volatility, vol_regime = self.calculate_volatility_regime(data)
 
         # Determine primary regime
-        regime = RegimeType.UNKNOWN
-        confidence = 0.0
-
         # High volatility regime takes precedence
         if vol_regime == "high" and volatility > self.high_vol_threshold:
             regime = RegimeType.HIGH_VOLATILITY

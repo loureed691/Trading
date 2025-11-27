@@ -107,9 +107,7 @@ class EnsembleStrategy(BaseStrategy):
             contributing = short_signals
             strength = short_vote / total_vote
         
-        # Check minimum agreement (additional guard against empty signals)
-        if len(signals) == 0:
-            return None
+        # Check minimum agreement
         agreement = len(contributing) / len(signals)
         if agreement < self.min_agreement:
             logger.debug(f"Insufficient agreement: {agreement:.2f} < {self.min_agreement}")
