@@ -22,6 +22,7 @@ from .strategies.breakout import BreakoutStrategy
 from .strategies.ensemble import EnsembleStrategy
 from .strategies.market_making import ArbitrageStrategy, MarketMakingStrategy
 from .strategies.mean_reversion import MeanReversionStrategy
+from .strategies.momentum import MomentumStrategy
 from .strategies.trend import TrendStrategy
 from .utils.logging import AuditLogger, MonitoringMetrics, TradingLogger, setup_logging
 
@@ -36,6 +37,7 @@ class TradingBot:
         "mean_reversion": MeanReversionStrategy,
         "breakout": BreakoutStrategy,
         "market_making": MarketMakingStrategy,
+        "momentum": MomentumStrategy,
     }
 
     def __init__(self, config_path: str = "config.yaml"):

@@ -25,6 +25,17 @@ pair_selection:
   max_funding_rate: 0.001  # for futures
   max_fee_pct: 0.1
   auto_market_selection: true  # Enable automatic spot/margin/futures selection
+  # Slippage filtering (new)
+  max_slippage_pct: 0.5  # Maximum acceptable slippage percentage
+  min_liquidity_depth: 10000  # Minimum orderbook depth in USD
+  order_size_for_slippage: 10000  # Order size in USD for slippage estimation
+  weights:
+    volume: 0.15
+    spread: 0.20
+    volatility: 0.20
+    funding: 0.10
+    fee: 0.15
+    slippage: 0.20
 
 # Regime detection settings
 regime:
@@ -54,6 +65,11 @@ risk:
   margin_buffer: 0.2  # 20% margin buffer
   max_leverage: 5  # max leverage for futures/margin (auto-adjusted)
   daily_loss_limit_pct: 3.0
+  # Portfolio-level risk controls (new)
+  portfolio_stop_loss_pct: 15.0  # Close all positions if total loss exceeds this
+  portfolio_take_profit_pct: 50.0  # Optional take-profit at portfolio level
+  trailing_stop_pct: 10.0  # Trailing stop from peak portfolio value
+  safe_mode_reduction_factor: 0.5  # Reduce position sizes by this factor in safe mode
 
 # Strategy settings
 strategies:
@@ -68,6 +84,7 @@ strategies:
     - mean_reversion
     - breakout
     - market_making
+    - momentum
   
   trend:
     short_period: 20
@@ -88,6 +105,15 @@ strategies:
     spread_multiplier: 1.5
     inventory_target: 0.5
     max_inventory_pct: 30
+  
+  momentum:
+    roc_period: 10
+    rsi_period: 14
+    volume_period: 10
+    momentum_threshold: 0.02
+    rsi_overbought: 70
+    rsi_oversold: 30
+    atr_multiplier: 2.0
 
 # Backtesting
 backtest:

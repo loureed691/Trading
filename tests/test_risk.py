@@ -281,3 +281,112 @@ class TestRiskManager:
             maintenance_margin_rate=0.01,
         )
         assert at_risk is True
+
+
+class TestPortfolioRiskManagement:
+    """Test cases for portfolio-level risk management."""
+
+    def test_check_portfolio_limits_no_initial_value(self) -> None:
+        """Test portfolio limits check with no initial value."""
+        rm = RiskManager({})
+        rm.update_portfolio(0)
+        
+        should_continue, action, reasons = rm.check_portfolio_limits()
+        assert should_continue is True
+        assert action == "continue"
+
+    def test_check_portfolio_limits_normal(self) -> None:
+        """Test portfolio limits under normal conditions."""
+        rm = RiskManager({"portfolio_stop_loss_pct": 15.0})
+        rm.update_portfolio(10000)
+        rm.update_portfolio(10500)  # 5% gain
+        
+        should_continue, action, reasons = rm.check_portfolio_limits()
+        assert should_continue is True
+        assert action == "continue"
+
+    def test_check_portfolio_stop_loss(self) -> None:
+        """Test portfolio stop-loss trigger."""
+        rm = RiskManager({"portfolio_stop_loss_pct": 15.0})
+        rm.update_portfolio(10000)
+        rm.initial_value = 10000  # Ensure initial is set
+        rm.update_portfolio(8000)  # 20% loss
+        
+        should_continue, action, reasons = rm.check_portfolio_limits()
+        assert should_continue is False
+        assert action == "close_all"
+        assert any("stop-loss" in r.lower() for r in reasons)
+
+    def test_check_portfolio_take_profit(self) -> None:
+        """Test portfolio take-profit trigger."""
+        rm = RiskManager({"portfolio_take_profit_pct": 50.0})
+        rm.update_portfolio(10000)
+        rm.initial_value = 10000
+        rm.update_portfolio(16000)  # 60% gain
+        
+        should_continue, action, reasons = rm.check_portfolio_limits()
+        assert should_continue is False
+        assert action == "take_profit"
+        assert any("take-profit" in r.lower() for r in reasons)
+
+    def test_safe_mode_trigger(self) -> None:
+        """Test safe mode activation on high drawdown."""
+        rm = RiskManager({"max_drawdown_pct": 20.0})  # Set higher threshold
+        rm.update_portfolio(10000)
+        rm.initial_value = 10000
+        rm.peak_value = 12000  # 16.7% drawdown from peak (above 15% safe mode threshold)
+        
+        rm.check_portfolio_limits()
+        assert rm.safe_mode_enabled is True
+
+    def test_safe_mode_restrictions(self) -> None:
+        """Test safe mode applies restrictions."""
+        rm = RiskManager({"max_position_pct": 10.0, "max_leverage": 5})
+        rm.safe_mode_enabled = True
+        
+        restrictions = rm.apply_safe_mode()
+        assert restrictions["max_position_pct"] < 0.10
+        assert restrictions["max_leverage"] < 5
+        assert restrictions["new_positions_allowed"] is False
+
+    def test_get_position_adjustments(self) -> None:
+        """Test position adjustment calculations."""
+        rm = RiskManager({})
+        rm.update_portfolio(10000)
+        
+        positions = {
+            "BTC-USDT": {
+                "entry_price": 100,
+                "size": 1,
+                "side": "long",
+                "stop_loss": 90,
+                "take_profit": 150,
+            }
+        }
+        
+        # Test stop-loss trigger
+        adjustments = rm.get_position_adjustments(positions, {"BTC-USDT": 85})
+        assert len(adjustments) > 0
+        assert adjustments[0]["action"] == "close"
+        assert "stop-loss" in adjustments[0]["reason"].lower()
+
+    def test_get_position_adjustments_take_profit(self) -> None:
+        """Test position adjustment for take-profit."""
+        rm = RiskManager({})
+        rm.update_portfolio(10000)
+        
+        positions = {
+            "BTC-USDT": {
+                "entry_price": 100,
+                "size": 1,
+                "side": "long",
+                "stop_loss": 90,
+                "take_profit": 120,
+            }
+        }
+        
+        # Test take-profit trigger
+        adjustments = rm.get_position_adjustments(positions, {"BTC-USDT": 125})
+        assert len(adjustments) > 0
+        assert adjustments[0]["action"] == "close"
+        assert "take-profit" in adjustments[0]["reason"].lower()

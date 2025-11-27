@@ -292,16 +292,18 @@ class RegimeDetector:
         """Get recommended strategy weights based on regime.
         
         Returns dict mapping strategy names to allocation weights (0-1).
+        Includes momentum strategy in weight calculations.
         """
         regime = regime_state.regime
         confidence = regime_state.confidence
 
-        # Default equal weights
+        # Default equal weights (including momentum)
         weights = {
-            "trend": 0.25,
-            "mean_reversion": 0.25,
-            "breakout": 0.25,
-            "market_making": 0.25,
+            "trend": 0.20,
+            "mean_reversion": 0.20,
+            "breakout": 0.20,
+            "market_making": 0.20,
+            "momentum": 0.20,
         }
 
         if confidence < 0.3:
@@ -309,38 +311,43 @@ class RegimeDetector:
 
         if regime == RegimeType.TREND_UP:
             weights = {
-                "trend": 0.5 * confidence,
-                "breakout": 0.3 * confidence,
-                "mean_reversion": 0.15 * (1 - confidence),
+                "trend": 0.35 * confidence,
+                "momentum": 0.30 * confidence,
+                "breakout": 0.20 * confidence,
+                "mean_reversion": 0.10 * (1 - confidence),
                 "market_making": 0.05,
             }
         elif regime == RegimeType.TREND_DOWN:
             weights = {
-                "trend": 0.5 * confidence,
-                "breakout": 0.25 * confidence,
-                "mean_reversion": 0.2 * (1 - confidence),
+                "trend": 0.35 * confidence,
+                "momentum": 0.25 * confidence,
+                "breakout": 0.20 * confidence,
+                "mean_reversion": 0.15 * (1 - confidence),
                 "market_making": 0.05,
             }
         elif regime == RegimeType.MEAN_REVERT:
             weights = {
-                "mean_reversion": 0.5 * confidence,
-                "market_making": 0.3 * confidence,
-                "trend": 0.1 * (1 - confidence),
-                "breakout": 0.1 * (1 - confidence),
+                "mean_reversion": 0.45 * confidence,
+                "market_making": 0.25 * confidence,
+                "momentum": 0.10,
+                "trend": 0.10 * (1 - confidence),
+                "breakout": 0.10 * (1 - confidence),
             }
         elif regime == RegimeType.HIGH_VOLATILITY:
             weights = {
-                "breakout": 0.4 * confidence,
-                "trend": 0.3 * confidence,
-                "mean_reversion": 0.2,
-                "market_making": 0.1 * (1 - confidence),
+                "breakout": 0.30 * confidence,
+                "momentum": 0.30 * confidence,
+                "trend": 0.20 * confidence,
+                "mean_reversion": 0.15,
+                "market_making": 0.05 * (1 - confidence),
             }
         elif regime == RegimeType.LOW_VOLATILITY:
             weights = {
-                "market_making": 0.5 * confidence,
-                "mean_reversion": 0.3 * confidence,
-                "trend": 0.1,
-                "breakout": 0.1 * (1 - confidence),
+                "market_making": 0.40 * confidence,
+                "mean_reversion": 0.25 * confidence,
+                "momentum": 0.15,
+                "trend": 0.10,
+                "breakout": 0.10 * (1 - confidence),
             }
 
         # Normalize weights to sum to 1

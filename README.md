@@ -8,18 +8,28 @@ A modular Python trading bot for KuCoin exchange supporting spot, margin, and fu
 - **Spot, Margin, and Futures Trading**: Full support for all KuCoin market types
 - **Auto Market Selection**: Automatically selects the best market (spot/margin/futures) based on liquidity, volatility, funding rates, and risk tolerance
 - **REST + WebSocket Clients**: Full REST API integration with real-time WebSocket data
+- **Updated for 2025**: Uses latest KuCoin API v3 authentication and endpoints
+
+### Dynamic Pair Scanning (NEW)
+- **Automatic Pair Discovery**: Fetches all tradable pairs via KuCoin API
+- **High Liquidity Filtering**: Filters pairs by 24h volume and minimum liquidity depth
+- **Volatility Screening**: Selects pairs within optimal volatility range
+- **Slippage Analysis**: Estimates and filters by maximum acceptable slippage
+- **Spread Filtering**: Narrows selection by tight bid-ask spread
 
 ### Regime Detection & Strategy Allocation
 - **Market Regime Detection**: Identifies trend (up/down), mean-reverting, high/low volatility regimes
 - **Hurst Exponent Analysis**: Distinguishes between trending and mean-reverting markets
 - **Ensemble Strategy**: Combines multiple strategies with regime-based weight allocation
 - **Dynamic Strategy Selection**: Automatically adjusts strategy weights based on detected regime
+- **Regime-Switch Logic**: Switches strategies based on market trend/volatility changes
 
 ### Modular Strategies
 - **Trend Following**: MA crossover with MACD confirmation
 - **Mean Reversion**: Bollinger Bands with RSI
 - **Breakout**: Price channels with volume confirmation
 - **Market Making / Arbitrage**: Dynamic spread based on volatility and inventory
+- **Momentum (NEW)**: ROC, RSI divergence, and volume momentum analysis
 - **Ensemble**: Combines all strategies with regime-aware weighting
 
 ### ML-Based Features
@@ -39,6 +49,10 @@ A modular Python trading bot for KuCoin exchange supporting spot, margin, and fu
   - VaR/ES metrics
 - **Portfolio Constraints**: Concentration limits, exposure limits, and net exposure checks
 - **Dynamic Hedging**: Recommendations for hedging based on exposure and volatility
+- **Portfolio Stop-Loss (NEW)**: Enforces portfolio-level drawdown limits
+- **Take-Profit Thresholds (NEW)**: Automatic profit-taking at configurable levels
+- **Trailing Stop (NEW)**: Protects profits with trailing stop from peak
+- **Safe Mode (NEW)**: Automatic risk reduction when critical thresholds are hit
 
 ### Backtesting & Validation
 - **Backtesting Engine**: Full simulation with fees and slippage
@@ -48,7 +62,17 @@ A modular Python trading bot for KuCoin exchange supporting spot, margin, and fu
 ### Monitoring & Audit
 - **Structured Audit Logs**: JSON-formatted audit trail for all trades
 - **Monitoring Metrics**: Real-time metrics collection (win rate, PnL, position counts)
+- **Prometheus-Compatible Metrics (NEW)**: Export metrics in Prometheus text format
+- **API Metrics Tracking (NEW)**: Tracks call success rates, latency, rate limits
 - **Comprehensive Logging**: Rotating file logs with structured formatting
+
+### Enhanced Reliability (NEW)
+- **Smart Retry Logic**: Rate limit detection with appropriate backoff
+- **Timeout Handling**: Specific handling for timeout errors
+- **Jitter Support**: Random jitter to prevent thundering herd
+- **Safe Mode Fallback**: Automatic risk reduction on critical errors
+- **Burst Rate Limiting**: Token bucket rate limiter with burst support
+- **API Health Monitoring**: Tracks API errors, rate limits, and latency
 
 ### Safe Defaults
 - **Paper Trading Mode**: Test strategies risk-free
@@ -212,14 +236,21 @@ Uses Bollinger Bands with RSI confirmation. Best for ranging markets with mean-r
 ### Breakout
 Uses price channel breakouts with volume confirmation. Best for capturing momentum moves in high volatility regimes.
 
+### Momentum (NEW)
+Uses Rate of Change (ROC), RSI divergence, and volume momentum for signal generation. Combines multiple momentum indicators:
+- Price momentum via ROC
+- RSI for momentum confirmation
+- Volume momentum for confirmation
+- Price acceleration for trend strength
+
 ### Market Making
 Provides liquidity with dynamic spread based on volatility and inventory management. Best for low volatility regimes.
 
 ### Ensemble (Default)
 Combines all strategies with regime-based weight allocation:
-- **Trend regime**: Higher weight to trend/breakout strategies
+- **Trend regime**: Higher weight to trend/momentum/breakout strategies
 - **Mean-revert regime**: Higher weight to mean-reversion/market-making
-- **High volatility**: Higher weight to breakout strategies
+- **High volatility**: Higher weight to breakout/momentum strategies
 - **Low volatility**: Higher weight to market-making strategies
 
 ## Risk Management
@@ -230,6 +261,7 @@ The bot includes comprehensive risk controls that automatically adjust:
 - Based on signal strength, volatility, and available margin
 - ML-adjusted based on forecast confidence
 - Kelly criterion with fractional sizing
+- Volatility targeting for consistent risk
 
 ### Dynamic Risk Parameters
 - **max_position_pct**: Reduced in high volatility or during drawdowns
@@ -245,6 +277,15 @@ The bot includes comprehensive risk controls that automatically adjust:
 - Maximum 20% concentration per position
 - Maximum 50% exposure per market
 - Maximum 150% net directional exposure
+
+### Portfolio-Level Risk Controls (NEW)
+- **Portfolio Stop-Loss**: Automatically closes all positions if total loss exceeds threshold
+- **Portfolio Take-Profit**: Optional profit-taking at configurable portfolio gain levels
+- **Trailing Stop**: Protects profits with trailing stop from portfolio peak value
+- **Daily Loss Limit**: Halts new trading if daily losses exceed threshold
+- **Safe Mode**: Automatically reduces position sizes and prevents new trades when:
+  - Drawdown exceeds 15%
+  - Daily loss exceeds 5%
 
 ### Dynamic Hedging
 - Automatic hedging recommendations when:

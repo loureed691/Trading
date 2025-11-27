@@ -71,6 +71,10 @@ DAYS_PER_YEAR = 365
 class RiskManager:
     """Comprehensive risk management for trading."""
 
+    # Safe mode thresholds
+    SAFE_MODE_DRAWDOWN_THRESHOLD = 0.15  # 15% drawdown triggers safe mode
+    SAFE_MODE_DAILY_LOSS_THRESHOLD = 0.05  # 5% daily loss triggers safe mode
+
     def __init__(self, config: dict[str, Any]):
         self.max_position_pct = config.get("max_position_pct", 5.0) / 100
         self.max_drawdown_pct = config.get("max_drawdown_pct", 10.0) / 100
@@ -80,16 +84,29 @@ class RiskManager:
         self.max_leverage = config.get("max_leverage", 5)
         self.daily_loss_limit_pct = config.get("daily_loss_limit_pct", 3.0) / 100
         
+        # Portfolio-level stop-loss and take-profit (new)
+        self.portfolio_stop_loss_pct = config.get("portfolio_stop_loss_pct", 15.0) / 100
+        self.portfolio_take_profit_pct = config.get("portfolio_take_profit_pct", 50.0) / 100
+        self.trailing_stop_pct = config.get("trailing_stop_pct", 10.0) / 100
+        
+        # Safe mode settings (new)
+        self.safe_mode_enabled = False
+        self.safe_mode_reduction_factor = config.get("safe_mode_reduction_factor", 0.5)
+        
         # Track portfolio state
         self.portfolio_value = 0.0
         self.peak_value = 0.0
+        self.initial_value = 0.0
         self.daily_pnl = 0.0
         self.positions: dict[str, float] = {}
+        self.position_pnl: dict[str, float] = {}
 
     def update_portfolio(
         self, value: float, daily_pnl: float = 0.0
     ) -> None:
         """Update portfolio state."""
+        if self.initial_value == 0.0:
+            self.initial_value = value
         self.portfolio_value = value
         self.peak_value = max(self.peak_value, value)
         self.daily_pnl = daily_pnl
@@ -648,3 +665,164 @@ class RiskManager:
             violations.append(f"Net exposure {net_exposure:.1%} > 150%")
         
         return len(violations) == 0, violations
+
+    def check_portfolio_limits(self) -> tuple[bool, str, list[str]]:
+        """Check portfolio-level stop-loss and take-profit thresholds.
+        
+        Returns (should_continue, action, reasons).
+        action can be: "continue", "reduce_exposure", "close_all", "take_profit"
+        """
+        if self.initial_value <= 0 or self.portfolio_value <= 0:
+            return True, "continue", []
+        
+        reasons = []
+        
+        # Calculate portfolio performance
+        total_return = (self.portfolio_value - self.initial_value) / self.initial_value
+        drawdown = (self.peak_value - self.portfolio_value) / self.peak_value if self.peak_value > 0 else 0
+        trailing_from_peak = drawdown
+        daily_loss = -self.daily_pnl / self.portfolio_value if self.portfolio_value > 0 else 0
+        
+        # Check portfolio stop-loss
+        if total_return <= -self.portfolio_stop_loss_pct:
+            reasons.append(f"Portfolio stop-loss hit: {total_return:.1%} <= -{self.portfolio_stop_loss_pct:.1%}")
+            return False, "close_all", reasons
+        
+        # Check max drawdown
+        if drawdown >= self.max_drawdown_pct:
+            reasons.append(f"Max drawdown exceeded: {drawdown:.1%} >= {self.max_drawdown_pct:.1%}")
+            return False, "reduce_exposure", reasons
+        
+        # Check trailing stop from peak
+        if trailing_from_peak >= self.trailing_stop_pct and total_return > 0:
+            reasons.append(f"Trailing stop triggered: {trailing_from_peak:.1%} from peak")
+            return False, "reduce_exposure", reasons
+        
+        # Check daily loss limit
+        if daily_loss >= self.daily_loss_limit_pct:
+            reasons.append(f"Daily loss limit hit: {daily_loss:.1%} >= {self.daily_loss_limit_pct:.1%}")
+            return False, "reduce_exposure", reasons
+        
+        # Check portfolio take-profit
+        if total_return >= self.portfolio_take_profit_pct:
+            reasons.append(f"Portfolio take-profit target reached: {total_return:.1%}")
+            return False, "take_profit", reasons
+        
+        # Check safe mode trigger
+        if drawdown >= self.SAFE_MODE_DRAWDOWN_THRESHOLD or daily_loss >= self.SAFE_MODE_DAILY_LOSS_THRESHOLD:
+            if not self.safe_mode_enabled:
+                self.safe_mode_enabled = True
+                reasons.append(f"Safe mode triggered: drawdown={drawdown:.1%}, daily_loss={daily_loss:.1%}")
+        elif self.safe_mode_enabled and drawdown < 0.05:
+            # Exit safe mode when conditions improve
+            self.safe_mode_enabled = False
+            reasons.append("Safe mode exited: conditions improved")
+        
+        return True, "continue", reasons
+
+    def get_position_adjustments(
+        self,
+        positions: dict[str, dict[str, Any]],
+        current_prices: dict[str, float],
+    ) -> list[dict[str, Any]]:
+        """Calculate position adjustments based on risk limits.
+        
+        Returns list of adjustment actions to take.
+        """
+        adjustments = []
+        
+        for symbol, position in positions.items():
+            current_price = current_prices.get(symbol, position.get("entry_price", 0))
+            entry_price = position.get("entry_price", 0)
+            size = position.get("size", 0)
+            side = position.get("side", "long")
+            stop_loss = position.get("stop_loss")
+            take_profit = position.get("take_profit")
+            
+            if entry_price <= 0 or size <= 0:
+                continue
+            
+            # Calculate PnL
+            if side == "long":
+                pnl_pct = (current_price - entry_price) / entry_price
+            else:
+                pnl_pct = (entry_price - current_price) / entry_price
+            
+            # Check stop-loss
+            if stop_loss:
+                if side == "long" and current_price <= stop_loss:
+                    adjustments.append({
+                        "symbol": symbol,
+                        "action": "close",
+                        "reason": f"Stop-loss triggered at {current_price}",
+                        "pnl_pct": pnl_pct,
+                    })
+                    continue
+                elif side == "short" and current_price >= stop_loss:
+                    adjustments.append({
+                        "symbol": symbol,
+                        "action": "close",
+                        "reason": f"Stop-loss triggered at {current_price}",
+                        "pnl_pct": pnl_pct,
+                    })
+                    continue
+            
+            # Check take-profit
+            if take_profit:
+                if side == "long" and current_price >= take_profit:
+                    adjustments.append({
+                        "symbol": symbol,
+                        "action": "close",
+                        "reason": f"Take-profit triggered at {current_price}",
+                        "pnl_pct": pnl_pct,
+                    })
+                    continue
+                elif side == "short" and current_price <= take_profit:
+                    adjustments.append({
+                        "symbol": symbol,
+                        "action": "close",
+                        "reason": f"Take-profit triggered at {current_price}",
+                        "pnl_pct": pnl_pct,
+                    })
+                    continue
+            
+            # Reduce large winners to lock in profit
+            if pnl_pct > 0.20:  # 20% profit
+                adjustments.append({
+                    "symbol": symbol,
+                    "action": "reduce",
+                    "reduce_pct": 0.5,  # Reduce by 50%
+                    "reason": f"Locking in profits at {pnl_pct:.1%}",
+                    "pnl_pct": pnl_pct,
+                })
+            
+            # Reduce losers before they hit stop-loss
+            if pnl_pct < -0.15 and stop_loss is None:  # 15% loss without stop-loss
+                adjustments.append({
+                    "symbol": symbol,
+                    "action": "reduce",
+                    "reduce_pct": 0.3,  # Reduce by 30%
+                    "reason": f"Reducing losing position at {pnl_pct:.1%}",
+                    "pnl_pct": pnl_pct,
+                })
+        
+        return adjustments
+
+    def apply_safe_mode(self) -> dict[str, Any]:
+        """Apply safe mode restrictions.
+        
+        Returns adjusted risk parameters when in safe mode.
+        """
+        if not self.safe_mode_enabled:
+            return {
+                "max_position_pct": self.max_position_pct,
+                "max_leverage": self.max_leverage,
+                "new_positions_allowed": True,
+            }
+        
+        return {
+            "max_position_pct": self.max_position_pct * self.safe_mode_reduction_factor,
+            "max_leverage": max(1, self.max_leverage // 2),
+            "new_positions_allowed": False,
+            "reason": "Safe mode active - risk parameters reduced",
+        }
