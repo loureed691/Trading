@@ -38,6 +38,10 @@ class RegimeState:
 class RegimeDetector:
     """Detect market regime for strategy allocation."""
 
+    # Default threshold for high volatility regime detection
+    HIGH_VOLATILITY_THRESHOLD = 0.03
+    LOW_VOLATILITY_THRESHOLD = 0.01
+
     def __init__(self, config: dict[str, Any] | None = None):
         config = config or {}
         self.trend_threshold = config.get("trend_threshold", 0.3)
@@ -46,6 +50,8 @@ class RegimeDetector:
         self.hurst_lookback = config.get("hurst_lookback", 100)
         self.volatility_high_pct = config.get("volatility_high_pct", 80)
         self.volatility_low_pct = config.get("volatility_low_pct", 20)
+        self.high_vol_threshold = config.get("high_vol_threshold", self.HIGH_VOLATILITY_THRESHOLD)
+        self.low_vol_threshold = config.get("low_vol_threshold", self.LOW_VOLATILITY_THRESHOLD)
 
     def calculate_hurst_exponent(
         self, data: pd.Series, max_lag: int = 20
@@ -61,11 +67,13 @@ class RegimeDetector:
 
         lags = range(2, max_lag)
         rs_values = []
+        # Multiplier for data window size per lag - provides enough data points for R/S calculation
+        window_multiplier = 10
 
         for lag in lags:
             try:
-                # Calculate R/S statistic
-                returns = np.diff(np.log(data.iloc[-lag * 10 :].values))
+                # Calculate R/S statistic using a window proportional to the lag
+                returns = np.diff(np.log(data.iloc[-lag * window_multiplier :].values))
                 if len(returns) < lag:
                     continue
 
@@ -240,12 +248,13 @@ class RegimeDetector:
         confidence = 0.0
 
         # High volatility regime takes precedence
-        if vol_regime == "high" and volatility > 0.03:
+        if vol_regime == "high" and volatility > self.high_vol_threshold:
             regime = RegimeType.HIGH_VOLATILITY
-            confidence = min(1.0, volatility / 0.05)
-        elif vol_regime == "low" and volatility < 0.01:
+            # Normalize confidence based on how far above threshold
+            confidence = min(1.0, volatility / (self.high_vol_threshold * 1.67))
+        elif vol_regime == "low" and volatility < self.low_vol_threshold:
             regime = RegimeType.LOW_VOLATILITY
-            confidence = 1.0 - min(1.0, volatility / 0.01)
+            confidence = 1.0 - min(1.0, volatility / self.low_vol_threshold)
         # Trend regime
         elif hurst > 0.55 and trend_strength > self.trend_threshold:
             if trend_direction == "up":

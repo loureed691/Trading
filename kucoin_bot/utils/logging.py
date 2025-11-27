@@ -3,7 +3,7 @@
 import json
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -80,7 +80,7 @@ class AuditLogger:
     def _log_event(self, event_type: str, data: dict[str, Any]) -> None:
         """Log a structured audit event."""
         event = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "event_type": event_type,
             **data,
         }

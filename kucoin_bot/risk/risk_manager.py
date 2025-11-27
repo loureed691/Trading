@@ -63,6 +63,11 @@ class HedgeRecommendation:
     reason: str
 
 
+# Constants for funding rate calculations
+FUNDING_PAYMENTS_PER_DAY = 3
+DAYS_PER_YEAR = 365
+
+
 class RiskManager:
     """Comprehensive risk management for trading."""
 
@@ -438,8 +443,8 @@ class RiskManager:
         
         High funding rates erode profits, so reduce leverage.
         """
-        # Annualized funding impact (funding paid 3x per day)
-        annual_funding_impact = abs(funding_rate) * 3 * 365
+        # Annualized funding impact
+        annual_funding_impact = abs(funding_rate) * FUNDING_PAYMENTS_PER_DAY * DAYS_PER_YEAR
         
         # Reduce leverage if funding is high
         if annual_funding_impact > 0.5:  # 50% annual impact

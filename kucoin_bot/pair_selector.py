@@ -357,15 +357,17 @@ class PairSelector:
             else:
                 score -= 20
             
-            # Spread score
+            # Spread score - protect against division by zero
             if ticker.bid > 0 and ticker.ask > 0:
-                spread_pct = (ticker.ask - ticker.bid) / ((ticker.ask + ticker.bid) / 2) * 100
-                if spread_pct < 0.1:
-                    score += 15
-                elif spread_pct < 0.3:
-                    score += 10
-                elif spread_pct > 0.5:
-                    score -= 10
+                mid_price = (ticker.ask + ticker.bid) / 2
+                if mid_price > 0:
+                    spread_pct = (ticker.ask - ticker.bid) / mid_price * 100
+                    if spread_pct < 0.1:
+                        score += 15
+                    elif spread_pct < 0.3:
+                        score += 10
+                    elif spread_pct > 0.5:
+                        score -= 10
         except Exception:
             score -= 30  # Market likely not available
         

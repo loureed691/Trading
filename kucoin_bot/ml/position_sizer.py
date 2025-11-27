@@ -28,6 +28,9 @@ class MLPositionSizer:
     to suggest position sizes that adapt to market conditions.
     """
 
+    # Trading days per year for annualization
+    TRADING_DAYS_PER_YEAR = 252
+
     def __init__(self, config: dict[str, Any] | None = None):
         config = config or {}
         self.target_volatility = config.get("target_volatility", 0.10)
@@ -36,6 +39,7 @@ class MLPositionSizer:
         self.vol_lookback = config.get("vol_lookback", 20)
         self.min_cv_score = config.get("min_cv_score", 0.55)
         self.kelly_fraction = config.get("kelly_fraction", 0.25)  # Fractional Kelly
+        self.trading_days = config.get("trading_days_per_year", self.TRADING_DAYS_PER_YEAR)
 
     def calculate_volatility_adjusted_size(
         self, data: pd.DataFrame, portfolio_value: float
@@ -44,9 +48,9 @@ class MLPositionSizer:
         if len(data) < self.vol_lookback:
             return self.min_position_pct
         
-        # Calculate recent volatility
+        # Calculate recent volatility (annualized)
         returns = np.log(data["close"] / data["close"].shift(1)).dropna()
-        recent_vol = returns.iloc[-self.vol_lookback:].std() * np.sqrt(252)  # Annualized
+        recent_vol = returns.iloc[-self.vol_lookback:].std() * np.sqrt(self.trading_days)
         
         if recent_vol <= 0:
             return self.min_position_pct

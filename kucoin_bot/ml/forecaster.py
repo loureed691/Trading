@@ -37,6 +37,7 @@ class MLForecaster:
         self.min_cv_score = config.get("min_cv_score", 0.51)
         self.n_cv_folds = config.get("n_cv_folds", 5)
         self.min_training_samples = config.get("min_training_samples", 200)
+        self.regularization = config.get("regularization", 0.01)
         
         # Feature cache
         self._feature_cache: dict[str, Any] = {}
@@ -119,10 +120,9 @@ class MLForecaster:
         X_test_bias = np.column_stack([np.ones(len(X_test)), X_test])
         
         try:
-            # Solve normal equation with regularization
-            lambda_reg = 0.01
+            # Solve normal equation with regularization (ridge regression)
             XtX = X_train_bias.T @ X_train_bias
-            XtX_reg = XtX + lambda_reg * np.eye(XtX.shape[0])
+            XtX_reg = XtX + self.regularization * np.eye(XtX.shape[0])
             Xty = X_train_bias.T @ y_train
             
             beta = np.linalg.solve(XtX_reg, Xty)
