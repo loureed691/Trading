@@ -6,6 +6,8 @@ import time
 from functools import wraps
 from typing import Any, Callable, TypeVar
 
+import aiohttp
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -108,8 +110,6 @@ class BaseClient:
     async def _ensure_session(self) -> None:
         """Ensure aiohttp session exists."""
         if self._session is None:
-            import aiohttp
-
             self._session = aiohttp.ClientSession()
 
     async def close(self) -> None:

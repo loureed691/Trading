@@ -3,7 +3,9 @@
 import base64
 import hashlib
 import hmac
+import json
 import time
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -183,8 +185,6 @@ class KuCoinRestClient(BaseClient):
 
         body = ""
         if data:
-            import json
-
             body = json.dumps(data)
 
         headers = {}
@@ -377,8 +377,6 @@ class KuCoinRestClient(BaseClient):
         client_oid: str | None = None,
     ) -> Order:
         """Place an order."""
-        import uuid
-
         data: dict[str, Any] = {
             "clientOid": client_oid or str(uuid.uuid4()),
             "symbol": symbol,

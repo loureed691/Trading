@@ -7,6 +7,7 @@ from typing import Any
 
 import pandas as pd
 
+from .backtest.engine import BacktestEngine, WalkForwardValidator
 from .clients.rest_client import KuCoinRestClient, Market, OrderSide, OrderType
 from .clients.ws_client import KuCoinWebSocketClient, WsMessage
 from .config import Config
@@ -375,8 +376,6 @@ class TradingBot:
         end_date: str | None = None,
     ) -> dict[str, Any]:
         """Run a backtest for a specific strategy."""
-        from .backtest.engine import BacktestEngine, WalkForwardValidator
-        
         if strategy_name not in self.strategies:
             raise ValueError(f"Unknown strategy: {strategy_name}")
         
@@ -418,8 +417,6 @@ class TradingBot:
         symbol: str,
     ) -> dict[str, Any]:
         """Run walk-forward validation for a strategy."""
-        from .backtest.engine import WalkForwardValidator
-        
         if strategy_name not in self.STRATEGY_MAP:
             raise ValueError(f"Unknown strategy: {strategy_name}")
         
