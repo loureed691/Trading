@@ -1,7 +1,7 @@
-"""Risk management module with ATR/VaR, drawdown controls, and margin checks."""
+"""Risk management module with ATR/VaR/ES, drawdown controls, and margin checks."""
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -19,11 +19,15 @@ class RiskMetrics:
     atr: float
     var_95: float
     var_99: float
+    es_95: float  # Expected Shortfall
+    es_99: float
     volatility: float
     max_position_size: float
     suggested_leverage: int
     stop_loss_distance: float
     margin_required: float
+    liquidation_distance: float = 0.0
+    funding_impact: float = 0.0
 
 
 @dataclass
@@ -37,6 +41,31 @@ class PositionSizing:
     margin_required: float
     risk_amount: float
     risk_pct: float
+
+
+@dataclass
+class DynamicRiskParams:
+    """Dynamically adjusted risk parameters."""
+
+    max_position_pct: float
+    max_drawdown_pct: float
+    max_leverage: int
+    adjustments: list[str] = field(default_factory=list)
+
+
+@dataclass
+class HedgeRecommendation:
+    """Hedging recommendation."""
+
+    should_hedge: bool
+    hedge_ratio: float
+    hedge_instrument: str
+    reason: str
+
+
+# Constants for funding rate calculations
+FUNDING_PAYMENTS_PER_DAY = 3
+DAYS_PER_YEAR = 365
 
 
 class RiskManager:
@@ -120,6 +149,7 @@ class RiskManager:
         """Calculate comprehensive risk metrics."""
         atr = self.calculate_atr(data)
         var_95, var_99 = self.calculate_var(data)
+        es_95, es_99 = self.calculate_expected_shortfall(data)
         volatility = self.calculate_volatility(data)
 
         # Max position based on volatility
@@ -146,15 +176,23 @@ class RiskManager:
         # Margin required for max position
         margin_required = max_position_size / suggested_leverage
 
+        # Liquidation distance
+        liquidation_distance = self.calculate_liquidation_distance(
+            current_price, suggested_leverage, "long"
+        )
+
         return RiskMetrics(
             atr=atr,
             var_95=var_95,
             var_99=var_99,
+            es_95=es_95,
+            es_99=es_99,
             volatility=volatility,
             max_position_size=max_position_size,
             suggested_leverage=suggested_leverage,
             stop_loss_distance=stop_loss_distance,
             margin_required=margin_required,
+            liquidation_distance=liquidation_distance,
         )
 
     def calculate_position_size(
@@ -342,3 +380,271 @@ class RiskManager:
             return True, margin_ratio
 
         return False, effective_margin / maintenance_margin
+
+    def calculate_expected_shortfall(
+        self,
+        data: pd.DataFrame,
+        confidence: float = 0.95,
+    ) -> tuple[float, float]:
+        """Calculate Expected Shortfall (Conditional VaR).
+        
+        ES is the expected loss given that loss exceeds VaR.
+        """
+        returns = np.log(data["close"] / data["close"].shift(1)).dropna()
+        
+        if len(returns) < 20:
+            return 0.0, 0.0
+        
+        sorted_returns = np.sort(returns)
+        
+        # ES at 95% and 99% confidence
+        cutoff_95 = int(len(sorted_returns) * (1 - 0.95))
+        cutoff_99 = int(len(sorted_returns) * (1 - 0.99))
+        
+        es_95 = -np.mean(sorted_returns[:max(1, cutoff_95)])
+        es_99 = -np.mean(sorted_returns[:max(1, cutoff_99)])
+        
+        return es_95, es_99
+
+    def calculate_liquidation_distance(
+        self,
+        entry_price: float,
+        leverage: int,
+        side: str,
+        maintenance_margin_rate: float = 0.01,
+    ) -> float:
+        """Calculate distance to liquidation price as percentage.
+        
+        Returns the price move (%) that would trigger liquidation.
+        """
+        if leverage <= 0 or entry_price <= 0:
+            return 0.0
+        
+        # Simplified liquidation calculation
+        # Liquidation occurs when loss > (initial margin - maintenance margin)
+        initial_margin_rate = 1 / leverage
+        available_for_loss = initial_margin_rate - maintenance_margin_rate
+        
+        # Distance is the percentage move that exhausts margin
+        if side.lower() == "long":
+            liquidation_distance = available_for_loss
+        else:
+            liquidation_distance = available_for_loss
+        
+        return liquidation_distance * 100  # Return as percentage
+
+    def adjust_leverage_for_funding(
+        self,
+        base_leverage: int,
+        funding_rate: float,
+        holding_period_hours: int = 8,
+    ) -> int:
+        """Adjust leverage based on funding rate impact.
+        
+        High funding rates erode profits, so reduce leverage.
+        """
+        # Annualized funding impact
+        annual_funding_impact = abs(funding_rate) * FUNDING_PAYMENTS_PER_DAY * DAYS_PER_YEAR
+        
+        # Reduce leverage if funding is high
+        if annual_funding_impact > 0.5:  # 50% annual impact
+            reduction_factor = 0.5
+        elif annual_funding_impact > 0.3:  # 30% annual impact
+            reduction_factor = 0.7
+        elif annual_funding_impact > 0.1:  # 10% annual impact
+            reduction_factor = 0.9
+        else:
+            reduction_factor = 1.0
+        
+        adjusted_leverage = max(1, int(base_leverage * reduction_factor))
+        
+        if adjusted_leverage < base_leverage:
+            logger.info(
+                f"Leverage reduced from {base_leverage}x to {adjusted_leverage}x "
+                f"due to funding rate ({funding_rate:.4%})"
+            )
+        
+        return adjusted_leverage
+
+    def calculate_dynamic_risk_params(
+        self,
+        data: pd.DataFrame,
+        regime_volatility: str = "normal",
+        current_drawdown: float = 0.0,
+    ) -> DynamicRiskParams:
+        """Auto-adjust risk parameters based on market conditions.
+        
+        Returns dynamically adjusted max_position_pct, max_drawdown_pct, max_leverage.
+        """
+        adjustments = []
+        
+        # Start with configured values
+        position_pct = self.max_position_pct * 100
+        drawdown_pct = self.max_drawdown_pct * 100
+        leverage = self.max_leverage
+        
+        # Calculate recent volatility
+        volatility = self.calculate_volatility(data)
+        
+        # Adjust for volatility regime
+        if regime_volatility == "high" or volatility > 0.05:
+            position_pct *= 0.5
+            leverage = max(1, leverage // 2)
+            adjustments.append("high_volatility_reduction")
+        elif regime_volatility == "low" or volatility < 0.01:
+            position_pct *= 1.2
+            adjustments.append("low_volatility_increase")
+        
+        # Adjust for current drawdown
+        if current_drawdown > 0.05:
+            # Reduce risk as drawdown increases
+            risk_reduction = 1 - min(0.5, current_drawdown)
+            position_pct *= risk_reduction
+            leverage = max(1, int(leverage * risk_reduction))
+            adjustments.append(f"drawdown_reduction_{current_drawdown:.1%}")
+        
+        # Calculate VaR-based adjustment
+        var_95, var_99 = self.calculate_var(data)
+        if var_99 > 0.05:  # 5% daily VaR at 99%
+            position_pct *= 0.7
+            leverage = max(1, leverage - 1)
+            adjustments.append("high_var_reduction")
+        
+        # ES-based adjustment
+        es_95, es_99 = self.calculate_expected_shortfall(data)
+        if es_99 > 0.08:  # 8% expected shortfall
+            position_pct *= 0.8
+            adjustments.append("high_es_reduction")
+        
+        # ATR-based adjustment
+        atr = self.calculate_atr(data)
+        current_price = data["close"].iloc[-1]
+        atr_pct = atr / current_price if current_price > 0 else 0
+        
+        if atr_pct > 0.03:  # 3% ATR
+            position_pct *= 0.8
+            adjustments.append("high_atr_reduction")
+        
+        # Cap at original limits
+        final_position = min(position_pct / 100, self.max_position_pct)
+        final_drawdown = min(drawdown_pct / 100, self.max_drawdown_pct)
+        final_leverage = min(leverage, self.max_leverage)
+        
+        logger.debug(
+            f"Dynamic risk params: pos={final_position:.1%}, "
+            f"dd={final_drawdown:.1%}, lev={final_leverage}x, "
+            f"adjustments={adjustments}"
+        )
+        
+        return DynamicRiskParams(
+            max_position_pct=final_position,
+            max_drawdown_pct=final_drawdown,
+            max_leverage=final_leverage,
+            adjustments=adjustments,
+        )
+
+    def calculate_hedge_recommendation(
+        self,
+        position_value: float,
+        position_side: str,
+        unrealized_pnl: float,
+        volatility: float,
+        correlation_with_btc: float = 0.8,
+    ) -> HedgeRecommendation:
+        """Calculate dynamic hedging recommendation.
+        
+        Recommends hedging based on exposure and market conditions.
+        """
+        should_hedge = False
+        hedge_ratio = 0.0
+        hedge_instrument = "BTC-USDT-PERP"  # Default hedge instrument
+        reason = ""
+        
+        # Check if position is significant
+        if self.portfolio_value <= 0:
+            return HedgeRecommendation(False, 0.0, "", "No portfolio value")
+        
+        exposure_pct = position_value / self.portfolio_value
+        
+        # Large exposure check
+        if exposure_pct > 0.3:  # 30% of portfolio
+            should_hedge = True
+            hedge_ratio = 0.3  # Hedge 30% of position
+            reason = f"Large exposure ({exposure_pct:.1%} of portfolio)"
+        
+        # High volatility check
+        if volatility > 0.05:  # 5% daily volatility
+            should_hedge = True
+            hedge_ratio = max(hedge_ratio, volatility / 0.05 * 0.2)  # Scale hedge ratio
+            reason = f"High volatility ({volatility:.1%})"
+        
+        # Significant unrealized profit protection
+        profit_pct = unrealized_pnl / position_value if position_value > 0 else 0
+        if profit_pct > 0.1:  # 10% unrealized profit
+            should_hedge = True
+            hedge_ratio = max(hedge_ratio, profit_pct * 0.5)  # Hedge 50% of profit
+            reason = f"Profit protection ({profit_pct:.1%} unrealized)"
+        
+        # Adjust hedge instrument based on correlation
+        if correlation_with_btc < 0.5:
+            hedge_instrument = "ETH-USDT-PERP"  # Use ETH if BTC correlation is low
+        
+        # Cap hedge ratio
+        hedge_ratio = min(0.5, hedge_ratio)
+        
+        return HedgeRecommendation(
+            should_hedge=should_hedge,
+            hedge_ratio=hedge_ratio,
+            hedge_instrument=hedge_instrument,
+            reason=reason,
+        )
+
+    def check_portfolio_constraints(
+        self,
+        proposed_positions: dict[str, float],
+        market_exposures: dict[str, float] | None = None,
+    ) -> tuple[bool, list[str]]:
+        """Check portfolio-level constraints.
+        
+        Returns (is_valid, list of constraint violations).
+        """
+        violations = []
+        
+        if self.portfolio_value <= 0:
+            return False, ["No portfolio value"]
+        
+        # Total exposure check
+        total_exposure = sum(abs(v) for v in proposed_positions.values())
+        max_total_exposure = self.portfolio_value * 3  # 300%
+        
+        if total_exposure > max_total_exposure:
+            violations.append(
+                f"Total exposure {total_exposure:.0f} > max {max_total_exposure:.0f}"
+            )
+        
+        # Single position concentration check
+        for symbol, value in proposed_positions.items():
+            concentration = abs(value) / self.portfolio_value
+            if concentration > 0.2:  # 20% max per position
+                violations.append(
+                    f"Position {symbol} concentration {concentration:.1%} > 20%"
+                )
+        
+        # Market exposure check (if provided)
+        if market_exposures:
+            for market, exposure in market_exposures.items():
+                market_pct = abs(exposure) / self.portfolio_value
+                if market_pct > 0.5:  # 50% max per market
+                    violations.append(
+                        f"Market {market} exposure {market_pct:.1%} > 50%"
+                    )
+        
+        # Long/short balance check
+        long_exposure = sum(v for v in proposed_positions.values() if v > 0)
+        short_exposure = abs(sum(v for v in proposed_positions.values() if v < 0))
+        
+        net_exposure = (long_exposure - short_exposure) / self.portfolio_value
+        if abs(net_exposure) > 1.5:  # 150% net exposure
+            violations.append(f"Net exposure {net_exposure:.1%} > 150%")
+        
+        return len(violations) == 0, violations

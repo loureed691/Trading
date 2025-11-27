@@ -11,14 +11,18 @@ from .backtest.engine import BacktestEngine, WalkForwardValidator
 from .clients.rest_client import KuCoinRestClient, Market, OrderSide, OrderType
 from .clients.ws_client import KuCoinWebSocketClient, WsMessage
 from .config import Config
+from .ml.forecaster import MLForecaster
+from .ml.position_sizer import MLPositionSizer
 from .pair_selector import PairScore, PairSelector
+from .regime.detector import RegimeDetector, RegimeType
 from .risk.risk_manager import RiskManager
 from .strategies.base import BaseStrategy, Signal, SignalType
 from .strategies.breakout import BreakoutStrategy
+from .strategies.ensemble import EnsembleStrategy
 from .strategies.market_making import ArbitrageStrategy, MarketMakingStrategy
 from .strategies.mean_reversion import MeanReversionStrategy
 from .strategies.trend import TrendStrategy
-from .utils.logging import TradingLogger, setup_logging
+from .utils.logging import AuditLogger, MonitoringMetrics, TradingLogger, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +44,8 @@ class TradingBot:
         setup_logging(self.config.get("logging", {}))
         
         self.trading_logger = TradingLogger()
+        self.audit_logger = AuditLogger()
+        self.metrics = MonitoringMetrics()
         
         # Initialize clients
         self.rest_client = KuCoinRestClient(
@@ -63,10 +69,18 @@ class TradingBot:
         )
         
         self.risk_manager = RiskManager(self.config.risk_config)
+        self.regime_detector = RegimeDetector(self.config.get("regime", {}))
+        self.ml_forecaster = MLForecaster(self.config.get("ml", {}))
+        self.ml_position_sizer = MLPositionSizer(self.config.get("ml", {}))
         
         # Initialize strategies
         self.strategies: dict[str, BaseStrategy] = {}
         self._init_strategies()
+        
+        # Initialize ensemble strategy
+        self.ensemble_strategy: EnsembleStrategy | None = None
+        if self.config.get("strategies.use_ensemble", True):
+            self._init_ensemble_strategy()
         
         # State
         self.is_running = False
@@ -75,6 +89,7 @@ class TradingBot:
         self.market_data: dict[str, pd.DataFrame] = {}
         self.paper_positions: dict[str, dict] = {}
         self.paper_balance = 10000.0
+        self.current_regimes: dict[str, RegimeType] = {}
 
     def _init_strategies(self) -> None:
         """Initialize enabled strategies."""
@@ -86,6 +101,21 @@ class TradingBot:
                 config = strategy_config.get(name, {})
                 self.strategies[name] = self.STRATEGY_MAP[name](config)
                 logger.info(f"Initialized strategy: {name}")
+
+    def _init_ensemble_strategy(self) -> None:
+        """Initialize ensemble strategy with regime detection."""
+        if not self.strategies:
+            logger.warning("No strategies available for ensemble")
+            return
+        
+        ensemble_config = {
+            "regime": self.config.get("regime", {}),
+            "min_agreement": self.config.get("strategies.ensemble.min_agreement", 0.5),
+            "strength_threshold": self.config.get("strategies.ensemble.strength_threshold", 0.3),
+        }
+        
+        self.ensemble_strategy = EnsembleStrategy(self.strategies, ensemble_config)
+        logger.info(f"Initialized ensemble strategy with {len(self.strategies)} sub-strategies")
 
     async def initialize(self) -> None:
         """Initialize the bot and select trading pairs."""
@@ -182,26 +212,65 @@ class TradingBot:
         
         data = self.market_data[symbol]
         
-        # Run all strategies and collect signals
-        signals: list[tuple[str, Signal]] = []
+        # Detect current regime
+        regime_state = self.regime_detector.detect_regime(data)
+        old_regime = self.current_regimes.get(symbol)
+        self.current_regimes[symbol] = regime_state.regime
         
-        for name, strategy in self.strategies.items():
+        # Log regime change
+        if old_regime and old_regime != regime_state.regime:
+            self.audit_logger.log_regime_change(
+                symbol,
+                old_regime.value if old_regime else "unknown",
+                regime_state.regime.value,
+                regime_state.confidence,
+            )
+            logger.info(
+                f"Regime change for {symbol}: {old_regime.value if old_regime else 'unknown'} -> {regime_state.regime.value}"
+            )
+        
+        # Calculate dynamic risk parameters
+        current_drawdown = (
+            (self.risk_manager.peak_value - self.risk_manager.portfolio_value)
+            / self.risk_manager.peak_value
+            if self.risk_manager.peak_value > 0 else 0
+        )
+        dynamic_params = self.risk_manager.calculate_dynamic_risk_params(
+            data,
+            regime_volatility=regime_state.metadata.get("volatility_regime", "normal") if regime_state.metadata else "normal",
+            current_drawdown=current_drawdown,
+        )
+        
+        # Use ensemble strategy if available, otherwise individual strategies
+        if self.ensemble_strategy:
             try:
-                signal = strategy.generate_signal(data)
+                signal = self.ensemble_strategy.generate_signal(data)
                 if signal and signal.type != SignalType.HOLD:
-                    signals.append((name, signal))
+                    await self._process_signal(symbol, "ensemble", signal, dynamic_params)
             except Exception as e:
-                logger.error(f"Strategy {name} error: {e}")
-        
-        # Process signals
-        for strategy_name, signal in signals:
-            await self._process_signal(symbol, strategy_name, signal)
+                logger.error(f"Ensemble strategy error: {e}")
+        else:
+            # Run all strategies and collect signals
+            signals: list[tuple[str, Signal]] = []
+            
+            for name, strategy in self.strategies.items():
+                try:
+                    signal = strategy.generate_signal(data)
+                    if signal and signal.type != SignalType.HOLD:
+                        signals.append((name, signal))
+                except Exception as e:
+                    logger.error(f"Strategy {name} error: {e}")
+            
+            # Process signals
+            for strategy_name, signal in signals:
+                await self._process_signal(symbol, strategy_name, signal, dynamic_params)
 
     async def _process_signal(
         self,
         symbol: str,
         strategy_name: str,
         signal: Signal,
+        dynamic_params: Any = None,
     ) -> None:
         """Process a trading signal."""
         self.trading_logger.log_signal(
@@ -222,13 +291,59 @@ class TradingBot:
             else await self._get_available_margin()
         )
         
-        sizing = self.risk_manager.calculate_position_size(
-            signal, data, available_margin
+        # Use ML-based position sizing if forecast is reliable
+        forecast_result = self.ml_forecaster.forecast(data)
+        ml_sizing = self.ml_position_sizer.get_position_size(
+            data=data,
+            portfolio_value=self.risk_manager.portfolio_value,
+            signal_strength=signal.strength,
+            forecast_confidence=forecast_result.cv_score if forecast_result.is_reliable else 0.0,
         )
+        
+        # Adjust signal strength based on ML forecast direction agreement
+        if forecast_result.is_reliable:
+            if (forecast_result.direction == "up" and signal.type == SignalType.LONG) or \
+               (forecast_result.direction == "down" and signal.type == SignalType.SHORT):
+                # ML agrees with signal, increase confidence
+                signal.strength = min(1.0, signal.strength * 1.2)
+                logger.debug(f"ML forecast agrees with signal for {symbol}")
+            elif forecast_result.direction != "neutral":
+                # ML disagrees, reduce confidence
+                signal.strength *= 0.7
+                logger.debug(f"ML forecast disagrees with signal for {symbol}")
+        
+        # Apply dynamic risk parameters
+        original_max_position = self.risk_manager.max_position_pct
+        original_max_leverage = self.risk_manager.max_leverage
+        
+        if dynamic_params:
+            self.risk_manager.max_position_pct = dynamic_params.max_position_pct
+            self.risk_manager.max_leverage = dynamic_params.max_leverage
+        
+        try:
+            sizing = self.risk_manager.calculate_position_size(
+                signal, data, available_margin
+            )
+        finally:
+            # Restore original values
+            self.risk_manager.max_position_pct = original_max_position
+            self.risk_manager.max_leverage = original_max_leverage
         
         if sizing is None:
             logger.warning(f"Position sizing rejected for {symbol}")
+            self.audit_logger.log_risk_event(
+                "POSITION_SIZING_REJECTED",
+                symbol,
+                {"reason": "Risk limits exceeded", "signal_strength": signal.strength},
+            )
             return
+        
+        # Adjust size based on ML recommendation
+        if ml_sizing.suggested_size_pct < sizing.risk_pct:
+            # ML suggests smaller position
+            size_reduction = ml_sizing.suggested_size_pct / sizing.risk_pct
+            sizing.size *= size_reduction
+            logger.debug(f"Position size reduced by ML: {size_reduction:.2f}")
         
         # Validate order
         is_valid, reason = self.risk_manager.validate_order(
@@ -241,6 +356,18 @@ class TradingBot:
         
         if not is_valid:
             self.trading_logger.log_risk_event("ORDER_REJECTED", reason)
+            self.audit_logger.log_risk_event("ORDER_REJECTED", symbol, {"reason": reason})
+            return
+        
+        # Check portfolio constraints
+        proposed_positions = {**self.risk_manager.positions}
+        proposed_positions[symbol] = sizing.size * signal.price
+        constraints_valid, violations = self.risk_manager.check_portfolio_constraints(
+            proposed_positions
+        )
+        
+        if not constraints_valid:
+            self.trading_logger.log_risk_event("PORTFOLIO_CONSTRAINT", ", ".join(violations))
             return
         
         # Execute trade
@@ -278,6 +405,21 @@ class TradingBot:
             "market",
         )
         
+        # Audit log
+        self.audit_logger.log_order_placed(
+            order_id=order_id,
+            symbol=symbol,
+            side=side,
+            size=sizing.size,
+            price=signal.price,
+            order_type="market",
+            leverage=sizing.leverage,
+            market="paper",
+        )
+        
+        # Record metrics
+        self.metrics.record_order_placed()
+        
         # Simulate fill
         fees = sizing.size * signal.price * 0.001
         self.paper_balance -= fees
@@ -300,6 +442,30 @@ class TradingBot:
             signal.price,
             fees,
         )
+        
+        # Audit log fill
+        self.audit_logger.log_order_filled(
+            order_id=order_id,
+            symbol=symbol,
+            fill_price=signal.price,
+            fill_size=sizing.size,
+            fees=fees,
+        )
+        
+        # Audit log position
+        self.audit_logger.log_position_opened(
+            symbol=symbol,
+            side=side,
+            size=sizing.size,
+            entry_price=signal.price,
+            leverage=sizing.leverage,
+            stop_loss=sizing.stop_loss,
+            take_profit=sizing.take_profit,
+        )
+        
+        # Update metrics
+        self.metrics.record_order_filled()
+        self.metrics.update_position_count(len(self.paper_positions))
 
     async def _execute_live_trade(
         self,
