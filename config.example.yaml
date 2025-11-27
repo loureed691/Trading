@@ -1,0 +1,86 @@
+# KuCoin Trading Bot Configuration Example
+# Copy this file to config.yaml and fill in your settings
+
+# API credentials (use environment variables or secrets.yaml for production)
+api:
+  key: "${KUCOIN_API_KEY}"
+  secret: "${KUCOIN_API_SECRET}"
+  passphrase: "${KUCOIN_API_PASSPHRASE}"
+  sandbox: true  # Use sandbox for testing
+
+# Trading modes
+trading:
+  mode: "paper"  # paper, live
+  markets:
+    - spot
+    - margin
+    - futures
+
+# Pair selection criteria
+pair_selection:
+  min_volume_24h: 1000000  # USD
+  max_spread_pct: 0.5  # percent
+  min_volatility: 0.02
+  max_volatility: 0.15
+  max_funding_rate: 0.001  # for futures
+  max_fee_pct: 0.1
+
+# Risk management
+risk:
+  max_position_pct: 5.0  # max % of portfolio per position
+  max_drawdown_pct: 10.0  # max portfolio drawdown
+  atr_multiplier: 2.0  # for stop loss
+  var_confidence: 0.95  # Value at Risk confidence level
+  margin_buffer: 0.2  # 20% margin buffer
+  max_leverage: 5  # max leverage for futures/margin
+  daily_loss_limit_pct: 3.0
+
+# Strategy settings
+strategies:
+  enabled:
+    - trend
+    - mean_reversion
+    - breakout
+    - market_making
+  
+  trend:
+    short_period: 20
+    long_period: 50
+    signal_threshold: 0.02
+  
+  mean_reversion:
+    lookback: 20
+    entry_zscore: 2.0
+    exit_zscore: 0.5
+  
+  breakout:
+    lookback: 20
+    volume_multiplier: 1.5
+    atr_multiplier: 1.0
+  
+  market_making:
+    spread_multiplier: 1.5
+    inventory_target: 0.5
+    max_inventory_pct: 30
+
+# Backtesting
+backtest:
+  start_date: "2023-01-01"
+  end_date: "2024-01-01"
+  initial_capital: 10000
+  walk_forward_periods: 5
+  train_pct: 0.7
+
+# Logging
+logging:
+  level: INFO
+  file: "logs/bot.log"
+  max_size_mb: 10
+  backup_count: 5
+
+# Retry settings
+retry:
+  max_attempts: 3
+  base_delay: 1.0
+  max_delay: 60.0
+  exponential_base: 2.0
