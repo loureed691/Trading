@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -315,6 +316,9 @@ class TradingBot:
                 adjusted_strength = signal.strength * 0.7
                 logger.debug(f"ML forecast disagrees with signal for {symbol}")
         
+        # Create a copy of the signal with adjusted strength for position sizing
+        adjusted_signal = replace(signal, strength=adjusted_strength)
+        
         # Apply dynamic risk parameters
         original_max_position = self.risk_manager.max_position_pct
         original_max_leverage = self.risk_manager.max_leverage
@@ -325,7 +329,7 @@ class TradingBot:
         
         try:
             sizing = self.risk_manager.calculate_position_size(
-                signal, data, available_margin
+                adjusted_signal, data, available_margin
             )
         finally:
             # Restore original values
