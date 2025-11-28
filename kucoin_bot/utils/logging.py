@@ -305,7 +305,7 @@ class TradingLogger:
 
 
 class MonitoringMetrics:
-    """Collect and expose monitoring metrics."""
+    """Collect and expose monitoring metrics in Prometheus-compatible format."""
 
     def __init__(self):
         self._metrics: dict[str, Any] = {
@@ -317,8 +317,17 @@ class MonitoringMetrics:
             "loss_count": 0,
             "current_positions": 0,
             "last_update": None,
+            # New metrics for enhanced monitoring
+            "api_errors": 0,
+            "rate_limit_hits": 0,
+            "safe_mode_triggers": 0,
+            "regime_changes": 0,
+            "portfolio_value": 0.0,
+            "drawdown_pct": 0.0,
+            "daily_pnl": 0.0,
         }
         self._position_pnls: list[float] = []
+        self._api_latencies: list[float] = []
 
     def record_order_placed(self) -> None:
         """Record order placement."""
@@ -352,6 +361,41 @@ class MonitoringMetrics:
         self._metrics["current_positions"] = count
         self._metrics["last_update"] = datetime.now(timezone.utc).isoformat()
 
+    def record_api_error(self) -> None:
+        """Record an API error."""
+        self._metrics["api_errors"] += 1
+        self._metrics["last_update"] = datetime.now(timezone.utc).isoformat()
+
+    def record_rate_limit(self) -> None:
+        """Record a rate limit hit."""
+        self._metrics["rate_limit_hits"] += 1
+        self._metrics["last_update"] = datetime.now(timezone.utc).isoformat()
+
+    def record_safe_mode_trigger(self) -> None:
+        """Record safe mode activation."""
+        self._metrics["safe_mode_triggers"] += 1
+        self._metrics["last_update"] = datetime.now(timezone.utc).isoformat()
+
+    def record_regime_change(self) -> None:
+        """Record a regime change detection."""
+        self._metrics["regime_changes"] += 1
+        self._metrics["last_update"] = datetime.now(timezone.utc).isoformat()
+
+    def update_portfolio_metrics(
+        self, portfolio_value: float, drawdown_pct: float, daily_pnl: float
+    ) -> None:
+        """Update portfolio-level metrics."""
+        self._metrics["portfolio_value"] = portfolio_value
+        self._metrics["drawdown_pct"] = drawdown_pct
+        self._metrics["daily_pnl"] = daily_pnl
+        self._metrics["last_update"] = datetime.now(timezone.utc).isoformat()
+
+    def record_api_latency(self, latency_ms: float) -> None:
+        """Record API call latency."""
+        self._api_latencies.append(latency_ms)
+        if len(self._api_latencies) > 1000:
+            self._api_latencies.pop(0)
+
     def get_metrics(self) -> dict[str, Any]:
         """Get current metrics snapshot."""
         total_trades = self._metrics["win_count"] + self._metrics["loss_count"]
@@ -367,6 +411,9 @@ class MonitoringMetrics:
                 if total_trades > 0 else 0.0
             ),
             "total_trades": total_trades,
+            "avg_api_latency_ms": (
+                np.mean(self._api_latencies) if self._api_latencies else 0.0
+            ),
         }
 
     def get_pnl_summary(self) -> dict[str, float]:
@@ -388,3 +435,48 @@ class MonitoringMetrics:
             "min_pnl": float(np.min(pnls)),
             "std_pnl": float(np.std(pnls)),
         }
+
+    def to_prometheus_format(self) -> str:
+        """Export metrics in Prometheus text format.
+        
+        Compatible with Prometheus scraping endpoint.
+        """
+        lines = []
+        metrics = self.get_metrics()
+        pnl_summary = self.get_pnl_summary()
+        
+        # Helper to format metric
+        def add_metric(name: str, value: float | int, help_text: str, metric_type: str = "gauge") -> None:
+            lines.append(f"# HELP kucoin_bot_{name} {help_text}")
+            lines.append(f"# TYPE kucoin_bot_{name} {metric_type}")
+            lines.append(f"kucoin_bot_{name} {value}")
+        
+        # Trading metrics
+        add_metric("orders_placed_total", metrics["orders_placed"], "Total orders placed", "counter")
+        add_metric("orders_filled_total", metrics["orders_filled"], "Total orders filled", "counter")
+        add_metric("orders_cancelled_total", metrics["orders_cancelled"], "Total orders cancelled", "counter")
+        add_metric("total_trades", metrics["total_trades"], "Total trades executed", "counter")
+        add_metric("win_count", metrics["win_count"], "Number of winning trades", "counter")
+        add_metric("loss_count", metrics["loss_count"], "Number of losing trades", "counter")
+        add_metric("win_rate", metrics["win_rate"], "Win rate (0-1)")
+        
+        # PnL metrics
+        add_metric("total_pnl", pnl_summary["total_pnl"], "Total profit/loss")
+        add_metric("avg_pnl", pnl_summary["avg_pnl"], "Average profit/loss per trade")
+        add_metric("max_pnl", pnl_summary["max_pnl"], "Maximum profit on a single trade")
+        add_metric("min_pnl", pnl_summary["min_pnl"], "Minimum profit (maximum loss) on a single trade")
+        
+        # Portfolio metrics
+        add_metric("portfolio_value", metrics["portfolio_value"], "Current portfolio value")
+        add_metric("drawdown_pct", metrics["drawdown_pct"], "Current drawdown percentage")
+        add_metric("daily_pnl", metrics["daily_pnl"], "Daily profit/loss")
+        add_metric("current_positions", metrics["current_positions"], "Number of open positions")
+        
+        # System metrics
+        add_metric("api_errors_total", metrics["api_errors"], "Total API errors", "counter")
+        add_metric("rate_limit_hits_total", metrics["rate_limit_hits"], "Total rate limit hits", "counter")
+        add_metric("safe_mode_triggers_total", metrics["safe_mode_triggers"], "Safe mode trigger count", "counter")
+        add_metric("regime_changes_total", metrics["regime_changes"], "Regime change detections", "counter")
+        add_metric("avg_api_latency_ms", metrics.get("avg_api_latency_ms", 0), "Average API latency in ms")
+        
+        return "\n".join(lines)

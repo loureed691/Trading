@@ -1,4 +1,4 @@
-"""Pair selection module based on volume, spread, volatility, funding, and fees."""
+"""Pair selection module based on volume, spread, volatility, funding, fees, and slippage."""
 
 import logging
 from dataclasses import dataclass, field
@@ -32,6 +32,11 @@ class PairScore:
     funding_rate: float
     fee_rate: float
     
+    # Slippage metrics (new)
+    estimated_slippage: float = 0.0
+    liquidity_depth: float = 0.0
+    slippage_score: float = 0.0
+    
     # Market selection metadata
     recommended_market: Market | None = None
     market_scores: dict[str, float] = field(default_factory=dict)
@@ -49,7 +54,11 @@ class MarketRecommendation:
 
 
 class PairSelector:
-    """Select trading pairs based on multiple criteria."""
+    """Select trading pairs based on multiple criteria including slippage."""
+
+    # Default slippage thresholds
+    DEFAULT_MAX_SLIPPAGE = 0.5  # 0.5% max slippage
+    DEFAULT_MIN_LIQUIDITY_DEPTH = 10000  # $10k minimum depth
 
     def __init__(
         self,
@@ -64,13 +73,19 @@ class PairSelector:
         self.max_funding = config.get("max_funding_rate", 0.001)
         self.max_fee = config.get("max_fee_pct", 0.1)
         
-        # Scoring weights
+        # Slippage configuration (new)
+        self.max_slippage = config.get("max_slippage_pct", self.DEFAULT_MAX_SLIPPAGE)
+        self.min_liquidity_depth = config.get("min_liquidity_depth", self.DEFAULT_MIN_LIQUIDITY_DEPTH)
+        self.order_size_for_slippage = config.get("order_size_for_slippage", 10000)  # $10k order
+        
+        # Scoring weights (updated to include slippage)
         self.weights = config.get("weights", {
-            "volume": 0.2,
-            "spread": 0.25,
-            "volatility": 0.25,
-            "funding": 0.15,
+            "volume": 0.15,
+            "spread": 0.20,
+            "volatility": 0.20,
+            "funding": 0.10,
             "fee": 0.15,
+            "slippage": 0.20,
         })
 
     def _calculate_spread(self, ticker: Ticker) -> float:
@@ -134,6 +149,83 @@ class PairSelector:
             return 0.0
         return 1.0 - (fee_pct / self.max_fee)
 
+    async def _estimate_slippage(
+        self,
+        symbol: str,
+        order_size_usd: float,
+        market: Market = Market.SPOT,
+    ) -> tuple[float, float]:
+        """Estimate slippage for a given order size.
+        
+        Returns (estimated_slippage_pct, liquidity_depth_usd).
+        """
+        try:
+            orderbook = await self.client.get_orderbook(symbol, depth=20, market=market)
+            
+            if not orderbook.bids or not orderbook.asks:
+                return float("inf"), 0.0
+            
+            # Calculate mid price
+            best_bid = orderbook.bids[0][0]
+            best_ask = orderbook.asks[0][0]
+            mid_price = (best_bid + best_ask) / 2
+            
+            # Calculate liquidity depth (total value in top 20 levels)
+            bid_depth = sum(price * size for price, size in orderbook.bids)
+            ask_depth = sum(price * size for price, size in orderbook.asks)
+            total_depth = bid_depth + ask_depth
+            
+            # Estimate slippage for buy order
+            remaining_size_usd = order_size_usd
+            weighted_price = 0.0
+            filled_size = 0.0
+            
+            for price, size in orderbook.asks:
+                level_value = price * size
+                if remaining_size_usd <= 0:
+                    break
+                fill_value = min(remaining_size_usd, level_value)
+                fill_size = fill_value / price
+                weighted_price += price * fill_size
+                filled_size += fill_size
+                remaining_size_usd -= fill_value
+            
+            if filled_size > 0:
+                avg_price = weighted_price / filled_size
+                # Return slippage as a percentage (e.g., 0.5 means 0.5%)
+                slippage_pct = ((avg_price - best_ask) / best_ask) * 100
+            else:
+                slippage_pct = float("inf")
+            
+            return max(0.0, slippage_pct), total_depth
+            
+        except Exception as e:
+            logger.warning(f"Failed to estimate slippage for {symbol}: {e}")
+            return float("inf"), 0.0
+
+    def _score_slippage(self, slippage_pct: float, liquidity_depth: float) -> float:
+        """Score slippage (lower is better) and liquidity depth (higher is better).
+        
+        Args:
+            slippage_pct: Slippage as percentage (e.g., 0.5 means 0.5%)
+            liquidity_depth: Total orderbook depth in USD
+        """
+        # Slippage score - max_slippage is also a percentage (e.g., 0.5 means 0.5%)
+        if slippage_pct > self.max_slippage:
+            slippage_score = 0.0
+        else:
+            slippage_score = max(0.0, 1.0 - (slippage_pct / self.max_slippage))
+        
+        # Liquidity depth score
+        if liquidity_depth < self.min_liquidity_depth:
+            depth_score = 0.0
+        else:
+            # Logarithmic scaling for depth
+            depth_score = min(1.0, np.log10(liquidity_depth / self.min_liquidity_depth) / 2)
+        
+        # Combined score (weighted average)
+        return slippage_score * 0.6 + depth_score * 0.4
+
     def _calculate_expected_edge(
         self,
         volatility: float,
@@ -154,8 +246,9 @@ class PairSelector:
         symbol: Symbol,
         ticker: Ticker,
         market: Market = Market.SPOT,
+        include_slippage: bool = True,
     ) -> PairScore | None:
-        """Score a trading pair."""
+        """Score a trading pair with optional slippage analysis."""
         try:
             spread_pct = self._calculate_spread(ticker)
             volatility = await self._calculate_volatility(symbol.symbol, market)
@@ -167,6 +260,22 @@ class PairSelector:
                 except Exception:
                     pass
 
+            # Calculate slippage metrics if enabled
+            estimated_slippage = 0.0
+            liquidity_depth = 0.0
+            slippage_score = 1.0  # Default to perfect score if not calculated
+            
+            if include_slippage:
+                estimated_slippage, liquidity_depth = await self._estimate_slippage(
+                    symbol.symbol, self.order_size_for_slippage, market
+                )
+                slippage_score = self._score_slippage(estimated_slippage, liquidity_depth)
+                
+                # Filter out pairs with excessive slippage
+                if estimated_slippage > self.max_slippage:
+                    logger.debug(f"Pair {symbol.symbol} rejected: slippage {estimated_slippage:.3f}% > {self.max_slippage}%")
+                    return None
+
             # Calculate individual scores
             volume_score = self._score_volume(ticker.volume_24h)
             spread_score = self._score_spread(spread_pct)
@@ -174,19 +283,22 @@ class PairSelector:
             funding_score = self._score_funding(funding_rate)
             fee_score = self._score_fee(symbol.fee_rate)
 
-            # Calculate weighted total score
+            # Calculate weighted total score (include slippage if weight exists)
             total_score = (
-                volume_score * self.weights["volume"]
-                + spread_score * self.weights["spread"]
-                + volatility_score * self.weights["volatility"]
-                + funding_score * self.weights["funding"]
-                + fee_score * self.weights["fee"]
+                volume_score * self.weights.get("volume", 0.15)
+                + spread_score * self.weights.get("spread", 0.20)
+                + volatility_score * self.weights.get("volatility", 0.20)
+                + funding_score * self.weights.get("funding", 0.10)
+                + fee_score * self.weights.get("fee", 0.15)
+                + slippage_score * self.weights.get("slippage", 0.20)
             )
 
-            # Calculate expected edge
+            # Calculate expected edge (include slippage in costs)
             expected_edge = self._calculate_expected_edge(
                 volatility, spread_pct, symbol.fee_rate, funding_rate
             )
+            # Adjust expected edge for slippage
+            expected_edge -= estimated_slippage
 
             return PairScore(
                 symbol=symbol.symbol,
@@ -203,6 +315,9 @@ class PairSelector:
                 volatility=volatility,
                 funding_rate=funding_rate,
                 fee_rate=symbol.fee_rate,
+                estimated_slippage=estimated_slippage,
+                liquidity_depth=liquidity_depth,
+                slippage_score=slippage_score,
             )
 
         except Exception as e:

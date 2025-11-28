@@ -10,6 +10,7 @@ from kucoin_bot.strategies.trend import TrendStrategy
 from kucoin_bot.strategies.mean_reversion import MeanReversionStrategy
 from kucoin_bot.strategies.breakout import BreakoutStrategy
 from kucoin_bot.strategies.market_making import MarketMakingStrategy
+from kucoin_bot.strategies.momentum import MomentumStrategy
 
 
 def generate_test_data(
@@ -126,6 +127,52 @@ class TestMeanReversionStrategy:
         
         signal = strategy.generate_signal(data)
         # May or may not generate signal depending on RSI
+
+
+class TestMomentumStrategy:
+    """Test cases for MomentumStrategy."""
+
+    def test_momentum_initialization(self) -> None:
+        """Test strategy initialization."""
+        config = {"roc_period": 12, "momentum_threshold": 0.03}
+        strategy = MomentumStrategy(config)
+        
+        assert strategy.name == "momentum"
+        assert strategy.roc_period == 12
+        assert strategy.momentum_threshold == 0.03
+
+    def test_momentum_no_signal_on_insufficient_data(self) -> None:
+        """Test no signal with insufficient data."""
+        strategy = MomentumStrategy({})
+        data = generate_test_data(n_bars=15)
+        
+        signal = strategy.generate_signal(data)
+        assert signal is None
+
+    def test_momentum_signal_on_strong_trend(self) -> None:
+        """Test signal generation on strong momentum."""
+        strategy = MomentumStrategy({
+            "roc_period": 10,
+            "momentum_threshold": 0.01,
+        })
+        
+        # Generate strongly trending data
+        data = generate_test_data(n_bars=100, trend="up", volatility=0.015)
+        
+        signal = strategy.generate_signal(data)
+        # May or may not generate signal depending on momentum conditions
+
+    def test_momentum_score_calculation(self) -> None:
+        """Test momentum score calculation."""
+        strategy = MomentumStrategy({})
+        
+        # Test positive momentum
+        score = strategy._calculate_momentum_score(0.05, 60, 1.5, 0.01)
+        assert score > 0
+        
+        # Test negative momentum
+        score = strategy._calculate_momentum_score(-0.05, 40, 0.5, -0.01)
+        assert score < 0
 
 
 class TestBreakoutStrategy:

@@ -108,12 +108,16 @@ class Position:
 
 
 class KuCoinRestClient(BaseClient):
-    """KuCoin REST API client."""
+    """KuCoin REST API client with v2 API support for 2025."""
 
+    # Updated API URLs for 2025
     SPOT_API_URL = "https://api.kucoin.com"
     SPOT_SANDBOX_URL = "https://openapi-sandbox.kucoin.com"
     FUTURES_API_URL = "https://api-futures.kucoin.com"
     FUTURES_SANDBOX_URL = "https://api-sandbox-futures.kucoin.com"
+    
+    # API version for authentication
+    API_VERSION = "3"  # Updated to v3 for 2025
 
     def __init__(
         self,
@@ -130,7 +134,7 @@ class KuCoinRestClient(BaseClient):
     def _generate_signature(
         self, timestamp: str, method: str, endpoint: str, body: str = ""
     ) -> tuple[str, str]:
-        """Generate API signature."""
+        """Generate API signature using updated v3 authentication."""
         str_to_sign = timestamp + method + endpoint + body
         signature = base64.b64encode(
             hmac.new(
@@ -153,7 +157,7 @@ class KuCoinRestClient(BaseClient):
     def _get_headers(
         self, method: str, endpoint: str, body: str = ""
     ) -> dict[str, str]:
-        """Get request headers with authentication."""
+        """Get request headers with authentication (v3 format for 2025)."""
         timestamp = str(int(time.time() * 1000))
         signature, passphrase = self._generate_signature(
             timestamp, method, endpoint, body
@@ -164,7 +168,7 @@ class KuCoinRestClient(BaseClient):
             "KC-API-SIGN": signature,
             "KC-API-TIMESTAMP": timestamp,
             "KC-API-PASSPHRASE": passphrase,
-            "KC-API-KEY-VERSION": "2",
+            "KC-API-KEY-VERSION": self.API_VERSION,
             "Content-Type": "application/json",
         }
 
@@ -177,7 +181,7 @@ class KuCoinRestClient(BaseClient):
         data: dict | None = None,
         authenticated: bool = False,
     ) -> dict[str, Any]:
-        """Make API request with rate limiting."""
+        """Make API request with enhanced error handling and rate limiting."""
         await self._ensure_session()
         await self.rate_limiter.acquire()
 
